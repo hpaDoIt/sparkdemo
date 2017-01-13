@@ -1,0 +1,7 @@
+create database spark;
+use spark
+create table student (id int(4), name char(20), gender char(4), age int(4));
+insert into student values(1,'Xueqian','F',23);
+insert into student values(2,'Weiliang','M',24);
+
+select * from student;
