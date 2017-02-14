@@ -8,8 +8,9 @@ import com.hpa.spark.cep.bean.DBConfig
 import com.hpa.spark.streaming.inputdstream.kafka.simple.KafkaManager
 import com.typesafe.config.ConfigFactory
 import kafka.serializer.StringDecoder
+import org.apache.commons.lang3.StringUtils
 import org.apache.hadoop.conf.Configuration
-import org.apache.hadoop.fs.{ FileSystem, Path}
+import org.apache.hadoop.fs.{FileSystem, Path}
 import org.apache.spark.{SparkConf, SparkContext}
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.SparkSession
@@ -94,9 +95,9 @@ object CepBootstrap {
       option("dbtable", "cpe_user_info")
 
     val cpeUserInfoList = cpeUserInfo.load().collectAsList()
-    //val cpeUserInfoDF = cpeUserInfo.load()
+    val cpeUserInfoDF = cpeUserInfo.load()
 
-    //sc.broadcast(cpeUserInfoDF)
+    sc.broadcast(cpeUserInfoDF)
     sc.broadcast(cpeUserInfoList)
 
     /**
@@ -124,7 +125,8 @@ object CepBootstrap {
     val messages = km.createDirectDStream[String, String,
       StringDecoder, StringDecoder](ssc, kafkaParams, topicsSet)
 
-    val messageDS = messages.map(x => x._2.split("|" , -1))
+    //val messageDS = messages.map(x => x._2.split("|" , -1))
+    val messageDS = messages.map(x => StringUtils.splitByWholeSeparatorPreserveAllTokens(x._2, "|"))
 
     messageDS.foreachRDD((rdd: RDD[Array[String]], time: Time) => {
       if(rdd.count() != 0){
@@ -136,59 +138,55 @@ object CepBootstrap {
         messageDF.createOrReplaceTempView("ODS28_LTEC1_S1MME_HM")
 
         //创建静态数据的视图
-        //cpeUserInfoDF.createOrReplaceTempView("CEP_USER_INFO")
-        //val resultCpeUserDataFrame = spark.sql("SELECT IMSI, MSISDN, TAC, ECI, APN FROM ODS28_LTEC1_S1MME_HM, CEP_USER_INFO WHERE MSISDN = PRODUCT_NO")
-        val resultCpeUserDataFrame = spark.sql("SELECT IMSI, MSISDN, TAC, ECI, APN FROM ODS28_LTEC1_S1MME_HM")
+        cpeUserInfoDF.createOrReplaceTempView("CEP_USER_INFO")
+        val resultCpeUserDataFrame = spark.sql("SELECT IMSI, MSISDN, TAC, ECI, APN FROM ODS28_LTEC1_S1MME_HM, CEP_USER_INFO WHERE MSISDN = PRODUCT_NO")
+        //resultCpeUserDataFrame.rdd.saveAsTextFile(defaultFS + hdfsPath + "/" + topics + ".txt")
+        var fs: FileSystem = null
 
-        //var fs: FileSystem = null
 
         resultCpeUserDataFrame.foreachPartition(rowRDD => {
+          if(! rowRDD.isEmpty){
+            val topic = "cepUserPhone"
+            val conf = new Configuration()
+            //conf.set("fs.defaultFS", hdfsPath)
+            //conf.set("fs.defaultFS", defaultFS)
+            fs = FileSystem.get(URI.create(defaultFS + "/" + hdfsPath), conf)
+            val path = new Path(hdfsPath + "/" + topic + "/" + topic +
+              System.currentTimeMillis())
+            //val path = new Path(hdfsPath + "/" + topic +  ".txt")
+            val outputStream = if (fs.exists(path)) {
+              fs.append(path)
+            } else {
+              fs.create(path)
+            }
 
-          val topic = "cepUserPhone"
-          val conf = new Configuration()
-          //conf.set("fs.defaultFS", hdfsPath)
-          //conf.set("fs.defaultFS", defaultFS)
-          val fs: FileSystem = FileSystem.get(URI.create(defaultFS + "/" + hdfsPath), conf)
-          val path = new Path(hdfsPath + "/" + topic + "/" +
-            Random.nextInt(100) + topic +
-            System.currentTimeMillis())
-          //val path = new Path(hdfsPath + "/" + topic + ".txt")
-          val outputStream = if (fs.exists(path)) {
-            fs.append(path)
-          } else {
-            fs.create(path)
-          }
-
-          //val outputStream = fs.create(path)
-
-          try{
-            rowRDD.foreach(row => {
-              println("row: $row")
-              if(row.length > 0){
-                val messageList = new StringBuilder
-                if(messageList.length > 0){
-                  messageList.append("," + row(0).toString + "," + row(1).toString + "," + row(2).toString + "," + row(3).toString + "," + row(4).toString)
-                }else{
-                  messageList.append(row(0).toString + "," + row(1).toString + "," + row(2).toString + "," + row(3).toString + "," + row(4).toString)
+            try{
+              rowRDD.foreach(row => {
+                if(row.length > 0){
+                  val messageList = new StringBuilder
+                  if(messageList.length > 0){
+                    messageList.append("," + row(0).toString + "," + row(1).toString + "," + row(2).toString + "," + row(3).toString + "," + row(4).toString)
+                  }else{
+                    messageList.append(row(0).toString + "," + row(1).toString + "," + row(2).toString + "," + row(3).toString + "," + row(4).toString)
+                  }
+                  println(s"向HDFS发送消息：$messageList")
+                  outputStream.write((messageList.toString() + "\n").getBytes("UTF-8"))
                 }
-                println(s"向HDFS发送消息：$messages")
-                outputStream.write((messageList.toString() + "\n").getBytes("UTF-8"))
-              }
 
-            })
-            outputStream.hflush()
-          }catch {
-            case e:Exception => e.printStackTrace()
-          }finally {
-            if(outputStream != null){
-              outputStream.close()
-            }
-            if(fs != null){
-              fs.close()
+              })
+              outputStream.hflush()
+            }catch {
+              case e:Exception => e.printStackTrace()
+            }finally {
+              if(outputStream != null){
+                outputStream.close()
+              }
             }
           }
-
         })
+        if(fs != null){
+          fs.close()
+        }
 
       }
 
