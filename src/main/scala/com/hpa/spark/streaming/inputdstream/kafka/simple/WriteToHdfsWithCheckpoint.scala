@@ -11,7 +11,7 @@ import org.apache.spark.streaming.{Seconds, StreamingContext}
 /**
   * Created by hpa on 2016/12/22.
   */
-object WriteToHdfsWithCheckpoint {
+object WriteToHdfsWithCheckpoint extends Serializable{
   def main(args: Array[String]): Unit = {
     if (args.length < 3) {
       System.err.println(s"""

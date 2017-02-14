@@ -120,7 +120,7 @@ class KafkaManager(kafkaParams: Map[String, String]) extends Serializable{
     * 更新zk上的offset
     * @param rdd
     */
-  def updateZKOffsets(rdd: RDD[(String, String, String)]):Unit = {
+  def updateZKOffsets(rdd: RDD[(String, String, String)]): Unit = {
     val groupId = kafkaParams.get("group.id").get
 
     val offsetsList = rdd.asInstanceOf[HasOffsetRanges].offsetRanges

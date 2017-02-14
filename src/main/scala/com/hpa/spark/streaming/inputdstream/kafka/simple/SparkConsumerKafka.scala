@@ -17,7 +17,7 @@ import scala.util.Random
   * 集群提交命令：
   *  spark-submit --class com.hpa.spark.streaming.inputdstream.kafka.simple.SparkConsumerKafka --master spark://slave01:7077 sparkdemo-1.0-SNAPSHOT-jar-with-dependencies.jar 192.168.1.210:9092,192.168.1.220:9092,192.168.1.230:9092 kafka2hdfs kafka2hdfsgroup hdfs://slave01:9000/data/output
   */
-object SparkConsumerKafka {
+object SparkConsumerKafka extends Serializable{
   def main(args: Array[String]){
 
     def functionToCreateContext(): StreamingContext = {
@@ -143,4 +143,4 @@ object SparkConsumerKafka {
 
 }
 
-case class People(name: String, phone: String, age: Int, sex: String)
+case class People(name: String, phone: String, age: Int, sex: String) extends Serializable
