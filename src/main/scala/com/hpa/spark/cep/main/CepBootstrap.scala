@@ -1,6 +1,7 @@
 package com.hpa.spark.cep.main
 
 import java.net.URI
+import java.util.Properties
 
 import com.hpa.spark.adapter.bean.{HdfsConfig, KafkaConfig}
 import com.hpa.spark.bean.Ods28Ltec1S1mmHm
@@ -8,12 +9,13 @@ import com.hpa.spark.cep.bean.DBConfig
 import com.hpa.spark.streaming.inputdstream.kafka.simple.KafkaManager
 import com.typesafe.config.ConfigFactory
 import kafka.serializer.StringDecoder
-import org.apache.commons.lang3.StringUtils
+import org.apache.commons.lang.StringUtils
 import org.apache.hadoop.conf.Configuration
 import org.apache.hadoop.fs.{FileSystem, Path}
 import org.apache.spark.{SparkConf, SparkContext}
 import org.apache.spark.rdd.RDD
-import org.apache.spark.sql.SparkSession
+import org.apache.spark.sql.hive.HiveContext
+import org.apache.spark.sql.{SQLContext, SparkSession}
 import org.apache.spark.streaming.{Seconds, StreamingContext, Time}
 
 import scala.util.Random
@@ -76,34 +78,45 @@ object CepBootstrap {
       * 注意：如果本地模式运行Spark Application且在程序中设置setMaster，
       *       则必须设置为setMaster(local[2])，线程个数大于2。
       */
-    val sparkConf = new SparkConf().setAppName("SparkCEP")
+    //val sparkConf = new SparkConf().setAppName("SparkCEP")
     //val sparkConf = new SparkConf().setAppName("SparkCEP").setMaster("local[2]")
+    //sparkConf.set("SPARK_CLASSPATH",
+      //"/usr/local/spark/spark-2.1.0-bin-hadoop2.6/conf/:/usr/local/spark/spark-2.1.0-bin-hadoop2.6/jars/*")
 
     /**
       * 基于sparkConf构造Spark Streaming上下文，并指定批处理时间间隔
       * 这里流式计算每隔60秒执行一次
       */
-    val ssc = new StreamingContext(sparkConf, Seconds(60))
-    val sc = ssc.sparkContext
-    val spark = SparkSession.builder().config("spark.sql.warehouse.dir", "/usr/hive/warehouse_v1").getOrCreate()
-    //val spark = SparkSession.builder().config("spark.sql.warehouse.dir", "/apps/hive/warehouse").getOrCreate()
+    //val ssc = new StreamingContext(sparkConf, Seconds(60))
+    //val sc = ssc.sparkContext
 
+    //val spark = SparkSession.builder().config("spark.sql.warehouse.dir", "/apps/hive/warehouse").getOrCreate()
+    val spark = SparkSession.builder().appName("SparkCEP").config("spark.sql.warehouse.dir", "/usr/hive/warehouse_v1").getOrCreate()
     val cpeUserInfo = spark.read.format("jdbc").
       option("url",dbConfg.url).
       option("user",dbConfg.username).
       option("password", dbConfg.password).
       option("dbtable", "cpe_user_info")
 
-    val cpeUserInfoList = cpeUserInfo.load().collectAsList()
+    val sc = spark.sparkContext
+    val sparkConf = sc.getConf
+    sparkConf.set("spark.executor.extraClassPath",
+      "/usr/local/spark/spark-2.1.0-bin-hadoop2.7/conf/:/usr/local/spark/spark-2.1.0-bin-hadoop2.6/jars/*")
+
+    sparkConf.set("spark.driver.extraClassPath",
+      "/usr/local/spark/spark-2.1.0-bin-hadoop2.7/conf/:/usr/local/spark/spark-2.1.0-bin-hadoop2.7/jars/*")
+    sparkConf.set("spark.sql.streaming.checkpointLocation", "/spark-cep")
+    //val ssc = new StreamingContext(sparkConf, Seconds(60))
+    spark.conf.set("spark.sql.streaming.checkpointLocation", "/spark-cep")
     val cpeUserInfoDF = cpeUserInfo.load()
 
-    sc.broadcast(cpeUserInfoDF)
-    sc.broadcast(cpeUserInfoList)
+    //sc.broadcast(cpeUserInfoDF)
+    //sc.broadcast(cpeUserInfoList)
 
     /**
       * topic集合
       */
-    val topicsSet = topics.split(",").toSet
+    //val topicsSet = topics.split(",").toSet
 
     /**
       * auto.offset.reset：largest；smallest。
@@ -111,92 +124,104 @@ object CepBootstrap {
       *   （1）largest表示接收最大的offset（即新消息）；
       *   （2）smallest表示从topic的开始位置消费所有消息。
       */
-    val kafkaParams = Map[String, String](
+   /* val kafkaParams = Map[String, String](
       "metadata.broker.list" -> brokers,
       "group.id" -> groupId,
       "auto.offset.reset" -> "smallest"
-    )
+    )*/
 
-    val km = new KafkaManager(kafkaParams)
+    //val km = new KafkaManager(kafkaParams)
 
     /**
       * 创建Direct方式的InputDStream
       */
-    val messages = km.createDirectDStream[String, String,
-      StringDecoder, StringDecoder](ssc, kafkaParams, topicsSet)
+   /* val messages = km.createDirectDStream[String, String,
+      StringDecoder, StringDecoder](ssc, kafkaParams, topicsSet)*/
+    val props: Map[String, String] = Map(
+     "bootstrap.servers" -> brokers,
+     "group.id" -> "test",
+     "enable.auto.commit" -> "true",
+     "auto.commit.interval.ms" -> "1000",
+     "session.timeout.ms" -> "30000",
+     "key.deserializer" -> "org.apache.kafka.common.serialization.StringDeserializer",
+     "value.deserializer" -> "org.apache.kafka.common.serialization.StringDeserializer",
+     "partition.assignment.strategy" -> "range"
+   )
 
-    //val messageDS = messages.map(x => x._2.split("|" , -1))
-    val messageDS = messages.map(x => StringUtils.splitByWholeSeparatorPreserveAllTokens(x._2, "|"))
+   val messageDS = spark.readStream.format("kafka").
+     option("kafka.bootstrap.servers", brokers).
+     option("partition.assignment.strategy", "range").
+     option("subscribe",topics).
+     options(props).
+     load()
 
-    messageDS.foreachRDD((rdd: RDD[Array[String]], time: Time) => {
-      if(rdd.count() != 0){
-        import spark.implicits._
+    import spark.implicits._
 
-        //imsi, msisdn, tac, eci, apn
-        val messageDF = rdd.map(w => Ods28Ltec1S1mmHm(w(5), w(7), w(41), w(42), w(45))).toDF()
-        //创建动态数据的视图
-        messageDF.createOrReplaceTempView("ODS28_LTEC1_S1MME_HM")
+    val messageExpr = messageDS.selectExpr("CAST(key AS STRING)", "CAST(value AS STRING)").as[(String, String)]
 
-        //创建静态数据的视图
-        cpeUserInfoDF.createOrReplaceTempView("CEP_USER_INFO")
-        val resultCpeUserDataFrame = spark.sql("SELECT IMSI, MSISDN, TAC, ECI, APN FROM ODS28_LTEC1_S1MME_HM, CEP_USER_INFO WHERE MSISDN = PRODUCT_NO")
-        //resultCpeUserDataFrame.rdd.saveAsTextFile(defaultFS + hdfsPath + "/" + topics + ".txt")
-        var fs: FileSystem = null
+    val messageDF = messageExpr.map(x => StringUtils.splitByWholeSeparatorPreserveAllTokens(x._2, "|")).map(w => Ods28Ltec1S1mmHm(w(5), w(7), w(41), w(42), w(45))).toDF()
+    //创建动态数据的视图
+    //imsi, msisdn, tac, eci, apn
+    messageDF.createOrReplaceTempView("ODS28_LTEC1_S1MME_HM")
 
+    //创建静态数据的视图
+    cpeUserInfoDF.createOrReplaceTempView("CEP_USER_INFO")
+    val resultCpeUserDataFrame = spark.sql("SELECT IMSI, MSISDN, TAC, ECI, APN FROM ODS28_LTEC1_S1MME_HM, CEP_USER_INFO WHERE MSISDN = PRODUCT_NO")
+    //resultCpeUserDataFrame.rdd.saveAsTextFile(defaultFS + hdfsPath + "/" + topics + ".txt")
+    var fs: FileSystem = null
 
-        resultCpeUserDataFrame.foreachPartition(rowRDD => {
-          if(! rowRDD.isEmpty){
-            val topic = "cepUserPhone"
-            val conf = new Configuration()
-            //conf.set("fs.defaultFS", hdfsPath)
-            //conf.set("fs.defaultFS", defaultFS)
-            fs = FileSystem.get(URI.create(defaultFS + "/" + hdfsPath), conf)
-            val path = new Path(hdfsPath + "/" + topic + "/" + topic +
-              System.currentTimeMillis())
-            //val path = new Path(hdfsPath + "/" + topic +  ".txt")
-            val outputStream = if (fs.exists(path)) {
-              fs.append(path)
-            } else {
-              fs.create(path)
-            }
-
-            try{
-              rowRDD.foreach(row => {
-                if(row.length > 0){
-                  val messageList = new StringBuilder
-                  if(messageList.length > 0){
-                    messageList.append("," + row(0).toString + "," + row(1).toString + "," + row(2).toString + "," + row(3).toString + "," + row(4).toString)
-                  }else{
-                    messageList.append(row(0).toString + "," + row(1).toString + "," + row(2).toString + "," + row(3).toString + "," + row(4).toString)
-                  }
-                  println(s"向HDFS发送消息：$messageList")
-                  outputStream.write((messageList.toString() + "\n").getBytes("UTF-8"))
-                }
-
-              })
-              outputStream.hflush()
-            }catch {
-              case e:Exception => e.printStackTrace()
-            }finally {
-              if(outputStream != null){
-                outputStream.close()
-              }
-            }
-          }
-        })
-        if(fs != null){
-          fs.close()
+    resultCpeUserDataFrame.foreachPartition(rowRDD => {
+      if(! rowRDD.isEmpty){
+        val topic = "cepUserPhone"
+        val conf = new Configuration()
+        //conf.set("fs.defaultFS", hdfsPath)
+        //conf.set("fs.defaultFS", defaultFS)
+        fs = FileSystem.get(URI.create(defaultFS + "/" + hdfsPath), conf)
+        val path = new Path(hdfsPath + "/" + topic + "/" + topic +
+          System.currentTimeMillis())
+        //val path = new Path(hdfsPath + "/" + topic +  ".txt")
+        val outputStream = if (fs.exists(path)) {
+          fs.append(path)
+        } else {
+          fs.create(path)
         }
 
-      }
+        try{
+          rowRDD.foreach(row => {
+            if(row.length > 0){
+              val messageList = new StringBuilder
+              if(messageList.length > 0){
+                messageList.append("," + row(0).toString + "," + row(1).toString + "," + row(2).toString + "," + row(3).toString + "," + row(4).toString)
+              }else{
+                messageList.append(row(0).toString + "," + row(1).toString + "," + row(2).toString + "," + row(3).toString + "," + row(4).toString)
+              }
+              println(s"向HDFS发送消息：$messageList")
+              outputStream.write((messageList.toString() + "\n").getBytes("UTF-8"))
+            }
 
+          })
+          outputStream.hflush()
+        }catch {
+          case e:Exception => e.printStackTrace()
+        }finally {
+          if(outputStream != null){
+            outputStream.close()
+          }
+        }
+      }
     })
+    if(fs != null){
+      fs.close()
+    }
 
     //正式启动计算
-    ssc.start()
+    //val query= messageDS.writeStream.start("/spark-cep")
+    val query= messageDS.writeStream.start()
+    //val query = resultCpeUserDataFrame.writeStream.start("")
 
     //等待执行结束（程序出错退出 或者 CTRL + C 退出）
-    ssc.awaitTermination()
+    query.awaitTermination()
+
   }
 
 }

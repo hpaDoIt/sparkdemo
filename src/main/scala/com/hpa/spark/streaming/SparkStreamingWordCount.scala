@@ -14,8 +14,7 @@ object SparkStreamingWordCount {
       * 配置应用名称以及配置两个线程（注意要大于等于2个线程）
       */
     val conf = new SparkConf().
-      setAppName("KafkaStreaming2HDFS").
-      setMaster("local[2]")
+      setAppName("KafkaStreaming2HDFS")
 
 
     /**
@@ -31,7 +30,7 @@ object SparkStreamingWordCount {
       * 可以设置数据的来源
       * 这里来源于socket，设置端口为8888，数据存储级别为MEMORY_AND_DISK
       */
-    val receiverInputDStream = ssc.socketTextStream("192.168.1.210", 8888, StorageLevel.MEMORY_AND_DISK)
+    val receiverInputDStream = ssc.socketTextStream("10.1.235.47", 8888, StorageLevel.MEMORY_AND_DISK)
 
     /**
       * 对socket方式接收的数据进行操作
